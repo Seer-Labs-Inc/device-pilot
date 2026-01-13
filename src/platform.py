@@ -182,6 +182,65 @@ class MacPlatform(Platform):
 class LinuxPlatform(Platform):
     """Linux/Raspberry Pi platform implementation using inotifywait."""
 
+    RAMDISK_PATH = Path("/mnt/ramdisk")
+    RAMDISK_SIZE = "200M"
+
+    def _ensure_ramdisk(self) -> bool:
+        """
+        Ensure RAM disk is mounted at /mnt/ramdisk.
+
+        Creates and mounts if it doesn't exist.
+        Returns True if RAM disk is available, False otherwise.
+        """
+        # Check if already mounted
+        try:
+            result = subprocess.run(
+                ["mountpoint", "-q", str(self.RAMDISK_PATH)],
+                capture_output=True
+            )
+            if result.returncode == 0:
+                logger.debug("RAM disk already mounted")
+                return True
+        except FileNotFoundError:
+            pass  # mountpoint command not available
+
+        # Try to create and mount
+        try:
+            # Create mount point if needed
+            if not self.RAMDISK_PATH.exists():
+                logger.info(f"Creating RAM disk mount point at {self.RAMDISK_PATH}")
+                subprocess.run(
+                    ["sudo", "mkdir", "-p", str(self.RAMDISK_PATH)],
+                    check=True,
+                    capture_output=True
+                )
+
+            # Mount tmpfs
+            logger.info(f"Mounting {self.RAMDISK_SIZE} RAM disk at {self.RAMDISK_PATH}")
+            subprocess.run(
+                ["sudo", "mount", "-t", "tmpfs", "-o", f"size={self.RAMDISK_SIZE}",
+                 "tmpfs", str(self.RAMDISK_PATH)],
+                check=True,
+                capture_output=True
+            )
+
+            # Make it writable by current user
+            subprocess.run(
+                ["sudo", "chmod", "777", str(self.RAMDISK_PATH)],
+                check=True,
+                capture_output=True
+            )
+
+            logger.info("RAM disk mounted successfully")
+            return True
+
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to mount RAM disk: {e}. Using temp directory instead.")
+            return False
+        except Exception as e:
+            logger.warning(f"RAM disk setup failed: {e}. Using temp directory instead.")
+            return False
+
     def start_file_watcher(
         self, directory: Path, callback: Callable[[Path], None], pattern: str = "*.ts"
     ) -> WatcherHandle:
@@ -222,8 +281,23 @@ class LinuxPlatform(Platform):
         return WatcherHandle(process, thread)
 
     def setup_buffer_directory(self, path: Path) -> Path:
-        """Set up buffer directory (potentially on RAM disk)."""
+        """
+        Set up buffer directory, using RAM disk if possible.
+
+        Automatically creates and mounts a RAM disk at /mnt/ramdisk if not present.
+        Falls back to the provided path if RAM disk setup fails.
+        """
+        # Try to ensure RAM disk is available
+        if self._ensure_ramdisk():
+            # Use RAM disk path instead
+            ramdisk_buffer = self.RAMDISK_PATH / "device-pilot" / "buffer"
+            ramdisk_buffer.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Using RAM disk buffer: {ramdisk_buffer}")
+            return ramdisk_buffer
+
+        # Fall back to provided path
         path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Using filesystem buffer: {path}")
         return path
 
     def cleanup_buffer_directory(self, path: Path):

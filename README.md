@@ -189,30 +189,26 @@ With default settings (3s pre-roll + 3s cooldown), the minimum video duration de
 
 ## Raspberry Pi Setup
 
-### RAM Disk (Recommended)
+### RAM Disk (Automatic)
 
-To reduce SD card wear, set up a RAM disk for the HLS buffer. The buffer constantly writes and deletes 5-second video segments, which can wear out SD cards over time.
+On Raspberry Pi, Device Pilot automatically creates and mounts a 200MB RAM disk at `/mnt/ramdisk` for the HLS buffer. This reduces SD card wear since the buffer constantly writes and deletes 5-second video segments.
 
+The RAM disk is **not persistent** across reboots - it's created fresh each time you run Device Pilot. This requires `sudo` permissions for the mount operation.
+
+If RAM disk creation fails (e.g., no sudo access), it falls back to `/tmp/device-pilot/buffer`.
+
+To manually unmount the RAM disk after stopping Device Pilot:
 ```bash
-# Create mount point
-sudo mkdir -p /mnt/ramdisk
-
-# Mount tmpfs (100MB is sufficient)
-sudo mount -t tmpfs -o size=100M tmpfs /mnt/ramdisk
-
-# Make persistent across reboots - add to /etc/fstab:
-echo "tmpfs /mnt/ramdisk tmpfs size=100M,nodev,nosuid 0 0" | sudo tee -a /etc/fstab
+sudo umount /mnt/ramdisk
 ```
-
-If `/mnt/ramdisk` exists, Device Pilot automatically uses it for the buffer. Otherwise, it falls back to `/tmp/device-pilot/buffer`.
 
 ### Storage Locations
 
-| Data | Raspberry Pi (with RAM disk) | Raspberry Pi (no RAM disk) |
-|------|------------------------------|---------------------------|
-| HLS buffer | `/mnt/ramdisk/device-pilot/buffer` | `/tmp/device-pilot/buffer` |
-| Session clips | `~/device-pilot/sessions` | `~/device-pilot/sessions` |
-| Final recordings | `~/device-pilot-recordings` | `~/device-pilot-recordings` |
+| Data | Location |
+|------|----------|
+| HLS buffer | `/mnt/ramdisk/device-pilot/buffer` (RAM) |
+| Session clips | `~/device-pilot/sessions` |
+| Final recordings | `~/device-pilot-recordings` |
 
 ## Camera Setup
 
