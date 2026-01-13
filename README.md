@@ -187,6 +187,33 @@ With default settings (3s pre-roll + 3s cooldown), the minimum video duration de
 - Cooldown: 3 seconds
 - **Minimum total: 8+ seconds** (5s pre-roll + active motion + 3s cooldown)
 
+## Raspberry Pi Setup
+
+### RAM Disk (Recommended)
+
+To reduce SD card wear, set up a RAM disk for the HLS buffer. The buffer constantly writes and deletes 5-second video segments, which can wear out SD cards over time.
+
+```bash
+# Create mount point
+sudo mkdir -p /mnt/ramdisk
+
+# Mount tmpfs (100MB is sufficient)
+sudo mount -t tmpfs -o size=100M tmpfs /mnt/ramdisk
+
+# Make persistent across reboots - add to /etc/fstab:
+echo "tmpfs /mnt/ramdisk tmpfs size=100M,nodev,nosuid 0 0" | sudo tee -a /etc/fstab
+```
+
+If `/mnt/ramdisk` exists, Device Pilot automatically uses it for the buffer. Otherwise, it falls back to `/tmp/device-pilot/buffer`.
+
+### Storage Locations
+
+| Data | Raspberry Pi (with RAM disk) | Raspberry Pi (no RAM disk) |
+|------|------------------------------|---------------------------|
+| HLS buffer | `/mnt/ramdisk/device-pilot/buffer` | `/tmp/device-pilot/buffer` |
+| Session clips | `~/device-pilot/sessions` | `~/device-pilot/sessions` |
+| Final recordings | `~/device-pilot-recordings` | `~/device-pilot-recordings` |
+
 ## Camera Setup
 
 Configure your camera's GOP (keyframe interval) to match the segment duration (5 seconds = 150 frames at 30fps). This ensures each HLS segment starts with an I-frame for clean concatenation.
