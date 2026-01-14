@@ -85,9 +85,23 @@ class HLSBuffer:
         # Clear old clips from previous runs to avoid mixing old footage
         self._clear_old_clips()
 
-        cmd = [
-            "ffmpeg",
-            "-rtsp_transport", "tcp",
+        # Build FFmpeg command based on stream type
+        cmd = ["ffmpeg"]
+
+        # Add protocol-specific options
+        if self.rtsp_url.startswith("rtsps://"):
+            # RTSPS (RTSP over TLS) - used by Ubiquiti cameras
+            # Don't verify certificates (self-signed), use TCP for SRTP
+            cmd.extend([
+                "-rtsp_transport", "tcp",
+            ])
+        else:
+            # Standard RTSP - use TCP transport
+            cmd.extend([
+                "-rtsp_transport", "tcp",
+            ])
+
+        cmd.extend([
             "-i", self.rtsp_url,
             "-c:v", "copy",
             "-c:a", "copy",
@@ -97,7 +111,7 @@ class HLSBuffer:
             "-hls_flags", "delete_segments",
             "-hls_segment_filename", str(self.buffer_dir / "clip_%04d.ts"),
             str(self.buffer_dir / "stream.m3u8"),
-        ]
+        ])
 
         try:
             self._process = subprocess.Popen(

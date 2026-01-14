@@ -50,8 +50,13 @@ pip install -e ".[dev]"
 Create a `.env` file in the project root:
 
 ```env
-RTSP_URL_MAIN=rtsp://user:pass@camera-ip:554/main_stream
-RTSP_URL_SUB=rtsp://user:pass@camera-ip:554/sub_stream
+# Reolink camera example
+RTSP_URL_MAIN=rtsp://user:pass@192.168.x.x:554/h264Preview_01_main
+RTSP_URL_SUB=rtsp://user:pass@192.168.x.x:554/h264Preview_01_sub
+
+# Ubiquiti camera example (uncomment to use)
+#RTSP_URL_MAIN=rtsps://192.168.x.x:7441/<high-stream-token>?enableSrtp
+#RTSP_URL_SUB=rtsps://192.168.x.x:7441/<low-stream-token>?enableSrtp
 ```
 
 ### Environment Variables
@@ -213,6 +218,38 @@ sudo umount /mnt/ramdisk
 ## Camera Setup
 
 Configure your camera's GOP (keyframe interval) to match the segment duration (5 seconds = 150 frames at 30fps). This ensures each HLS segment starts with an I-frame for clean concatenation.
+
+### Tested Cameras
+
+#### Reolink FE-W (Fisheye)
+
+| Stream | Resolution | Protocol |
+|--------|------------|----------|
+| Main (high-res) | 2560x2560 | rtsp:// |
+| Sub (low-res) | 1024x1024 | rtsp:// |
+
+```env
+RTSP_URL_MAIN=rtsp://user:pass@192.168.x.x:554/h264Preview_01_main
+RTSP_URL_SUB=rtsp://user:pass@192.168.x.x:554/h264Preview_01_sub
+```
+
+#### Ubiquiti Doorbell Lite
+
+| Stream | Resolution | Protocol |
+|--------|------------|----------|
+| High | 1920x2560 | rtsps:// |
+| Medium | 672x896 | rtsps:// |
+| Low | 336x448 | rtsps:// |
+
+Ubiquiti uses RTSPS (RTSP over TLS with SRTP). Stream URLs are available from the UniFi Protect web interface under camera settings.
+
+```env
+# Use high-res for recording, low-res for detection
+RTSP_URL_MAIN=rtsps://192.168.x.x:7441/<high-stream-token>?enableSrtp
+RTSP_URL_SUB=rtsps://192.168.x.x:7441/<low-stream-token>?enableSrtp
+```
+
+**Note:** Both `rtsp://` and `rtsps://` protocols are supported.
 
 ## License
 
