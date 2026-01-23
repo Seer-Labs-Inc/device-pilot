@@ -96,9 +96,10 @@ def dark_frame() -> np.ndarray:
 
 
 @pytest.fixture
-@requires_ffmpeg
 def hls_buffer(tmp_path: Path) -> Generator[Path, None, None]:
     """Generate a test HLS buffer with video segments."""
+    if not _check_command("ffmpeg"):
+        pytest.skip("FFmpeg not available")
     buffer_dir = tmp_path / "buffer"
     buffer_dir.mkdir()
 
@@ -129,9 +130,10 @@ def hls_buffer(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 @pytest.fixture
-@requires_ffmpeg
 def test_video(tmp_path: Path) -> Generator[Path, None, None]:
     """Generate a simple test video file."""
+    if not _check_command("ffmpeg"):
+        pytest.skip("FFmpeg not available")
     video_path = tmp_path / "test_video.mp4"
 
     cmd = [

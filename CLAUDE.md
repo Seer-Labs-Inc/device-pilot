@@ -82,6 +82,13 @@ Recorder (recorder.py)
     └── Copies pre-roll + drains live clips → FFmpeg concat → MP4
 ```
 
+**Session state machine:**
+```
+RECORDING ──(no motion)──► COOLDOWN ──(cooldown expires)──► FINALIZING ──► COMPLETED
+    ▲                          │
+    └───(motion detected)──────┘
+```
+
 **Overlapping events (Scenario 2):**
 - Event A recording → A enters cooldown → new motion detected
 - A continues cooldown, B starts with pre-roll (overlaps A's end)
@@ -133,6 +140,17 @@ Tests use pytest with dynamically generated test videos (requires FFmpeg).
 - `@requires_ffprobe` - Skipped if FFprobe unavailable
 - `@requires_fswatch` - Skipped if fswatch unavailable
 
-## Camera Requirements
+## Key Implementation Details
 
-Configure camera GOP (keyframe interval) to 5 seconds (150 frames at 30fps) to ensure each HLS segment starts with an I-frame. Without this, video concatenation may produce corrupted output.
+**Motion detection smoothing:**
+- Scores averaged over 15 frames (~0.5s at 30fps) to prevent false triggers
+- Hysteresis: requires 30 consecutive low-motion frames (~1s) before "no motion"
+
+**Pre-roll calculation:**
+- HLS uses 5-second segments, pre-roll rounds up to whole segments
+- Formula: `ceil(pre_roll_seconds / 5) * 5 = actual pre-roll`
+- Example: requesting 3s pre-roll → 1 segment = 5s actual
+
+**Camera requirements:**
+- Configure GOP (keyframe interval) to 5 seconds (150 frames at 30fps)
+- Each HLS segment must start with an I-frame for clean concatenation
