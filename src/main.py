@@ -1,6 +1,7 @@
 """Main entry point for Device Pilot."""
 
 import argparse
+import atexit
 import logging
 import shutil
 import signal
@@ -19,11 +20,15 @@ from .session_manager import SessionManager, SessionManagerConfig
 
 logger = logging.getLogger(__name__)
 
+# Global reference for atexit cleanup
+_pilot_instance: Optional["PilotSystem"] = None
+
 
 class PilotSystem:
     """Main system orchestrating all components."""
 
     def __init__(self, config: PilotConfig):
+        global _pilot_instance
         self.config = config
         self.platform = Platform.get_current()
 
@@ -35,7 +40,12 @@ class PilotSystem:
         self.session_manager: Optional[SessionManager] = None
 
         self._running = False
+        self._stopped = False  # Track if cleanup has been done
         self._setup_signal_handlers()
+
+        # Register for atexit cleanup as a fallback
+        _pilot_instance = self
+        atexit.register(_atexit_cleanup)
 
     def _setup_signal_handlers(self):
         """Set up signal handlers for graceful shutdown."""
@@ -46,6 +56,8 @@ class PilotSystem:
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum}, shutting down...")
         self._running = False
+        # Directly call stop for immediate cleanup (don't wait for main loop)
+        self.stop()
 
     def _on_session_start(self, session: Session):
         """Handle new session start."""
@@ -168,55 +180,62 @@ class PilotSystem:
         last_tick = time.time()
         motion_state = False
 
-        while self._running:
-            try:
-                # Read frame from detection stream
-                ret, frame = self.capture.read()
-                if not ret:
-                    logger.warning("Failed to read frame, reconnecting...")
+        try:
+            while self._running:
+                try:
+                    # Read frame from detection stream
+                    ret, frame = self.capture.read()
+                    if not ret:
+                        logger.warning("Failed to read frame, reconnecting...")
+                        time.sleep(1)
+                        self.capture.release()
+                        if not self.capture.open():
+                            logger.error("Failed to reconnect")
+                            break
+                        continue
+
+                    # Analyze frame
+                    result = self.detector.analyze_frame(frame)
+                    current_time = time.time()
+
+                    # Handle detection state changes
+                    if result.motion_detected or result.light_event_detected:
+                        if not motion_state:
+                            logger.info(
+                                f"Motion detected (raw={result.motion_score:.3f}, "
+                                f"smoothed={result.smoothed_motion_score:.3f}, "
+                                f"light_delta={result.brightness_delta:.1f})"
+                            )
+                        motion_state = True
+                        self.session_manager.on_motion_detected(current_time)
+                    else:
+                        if motion_state:
+                            logger.info("Motion ended")
+                        motion_state = False
+                        self.session_manager.on_no_motion(current_time)
+
+                    # Tick session manager periodically
+                    if current_time - last_tick >= 1.0:
+                        self.session_manager.tick(current_time)
+                        last_tick = current_time
+
+                    # Small delay to control CPU usage
+                    time.sleep(0.033)  # ~30 FPS
+
+                except Exception as e:
+                    logger.error(f"Error in detection loop: {e}")
                     time.sleep(1)
-                    self.capture.release()
-                    if not self.capture.open():
-                        logger.error("Failed to reconnect")
-                        break
-                    continue
-
-                # Analyze frame
-                result = self.detector.analyze_frame(frame)
-                current_time = time.time()
-
-                # Handle detection state changes
-                if result.motion_detected or result.light_event_detected:
-                    if not motion_state:
-                        logger.info(
-                            f"Motion detected (raw={result.motion_score:.3f}, "
-                            f"smoothed={result.smoothed_motion_score:.3f}, "
-                            f"light_delta={result.brightness_delta:.1f})"
-                        )
-                    motion_state = True
-                    self.session_manager.on_motion_detected(current_time)
-                else:
-                    if motion_state:
-                        logger.info("Motion ended")
-                    motion_state = False
-                    self.session_manager.on_no_motion(current_time)
-
-                # Tick session manager periodically
-                if current_time - last_tick >= 1.0:
-                    self.session_manager.tick(current_time)
-                    last_tick = current_time
-
-                # Small delay to control CPU usage
-                time.sleep(0.033)  # ~30 FPS
-
-            except Exception as e:
-                logger.error(f"Error in detection loop: {e}")
-                time.sleep(1)
-
-        self.stop()
+        finally:
+            # Ensure cleanup happens even on unexpected exit
+            self.stop()
 
     def stop(self):
         """Stop all system components."""
+        # Prevent double cleanup
+        if self._stopped:
+            return
+        self._stopped = True
+
         logger.info("Stopping Device Pilot...")
         self._running = False
 
@@ -226,7 +245,7 @@ class PilotSystem:
                 logger.info(f"Finalizing remaining session {session.id}")
                 self._on_session_finalize(session)
 
-        # Stop components
+        # Stop components - order matters: watcher first, then buffer
         if self.recorder_manager:
             self.recorder_manager.cleanup()
 
@@ -240,6 +259,13 @@ class PilotSystem:
         # to preserve evidence in case of crash
 
         logger.info("Device Pilot stopped")
+
+
+def _atexit_cleanup():
+    """Cleanup handler called on interpreter exit."""
+    global _pilot_instance
+    if _pilot_instance is not None:
+        _pilot_instance.stop()
 
 
 def main():
