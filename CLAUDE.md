@@ -101,8 +101,11 @@ RECORDING ──(no motion)──► COOLDOWN ──(cooldown expires)──► 
 - `RTSP_URL_SUB` - Low-res stream URL for detection
 - `PILOT_PRE_ROLL_SECONDS` - Pre-roll duration (default: 3)
 - `PILOT_COOLDOWN_SECONDS` - Cooldown duration (default: 3)
+- `PILOT_STARTUP_DELAY_SECONDS` - Wait before enabling detection (default: 10)
+- `PILOT_MIN_MOTION_SECONDS` - Minimum continuous motion to trigger (default: 0.5)
 - `PILOT_MOTION_THRESHOLD` - Motion sensitivity 0-1 (default: 0.02)
 - `PILOT_LIGHT_JUMP_THRESHOLD` - Light sensitivity 0-255 (default: 30)
+- `PILOT_MAX_RECONNECT_DELAY` - Max delay between reconnection attempts (default: 60)
 - `PILOT_BUFFER_DIR` - Buffer directory path (default: /tmp/device-pilot/buffer)
 - `PILOT_SESSIONS_DIR` - Sessions directory path (default: /tmp/device-pilot/sessions)
 - `PILOT_EVIDENCE_DIR` - Output directory path (default: ~/device-pilot-recordings)
@@ -150,6 +153,16 @@ Tests use pytest with dynamically generated test videos (requires FFmpeg).
 - HLS uses 5-second segments, pre-roll rounds up to whole segments
 - Formula: `ceil(pre_roll_seconds / 5) * 5 = actual pre-roll`
 - Example: requesting 3s pre-roll → 1 segment = 5s actual
+
+**Network resilience:**
+- Handles outages up to 5+ minutes with indefinite retry
+- Exponential backoff on stream disconnection (1s → 2s → 4s → ... up to 30s)
+- Auto-restarts HLS buffer after 10 consecutive failures or 2 minutes of outage
+- Detector state reset after reconnection to prevent false triggers
+
+**False positive prevention:**
+- Startup delay (default 10s) lets camera stabilize before enabling detection
+- Minimum motion duration (default 0.5s) filters brief artifacts/noise
 
 **Camera requirements:**
 - Configure GOP (keyframe interval) to 5 seconds (150 frames at 30fps)

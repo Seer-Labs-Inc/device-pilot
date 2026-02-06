@@ -50,10 +50,15 @@ class PilotConfig:
     pre_roll_seconds: float = 3.0
     cooldown_seconds: float = 3.0
     segment_duration: float = 5.0
+    startup_delay_seconds: float = 10.0  # Wait before enabling detection
+    min_motion_seconds: float = 0.5  # Minimum continuous motion to trigger session
 
     # Detection thresholds
     motion_threshold: float = 0.02
     light_jump_threshold: float = 30.0
+
+    # Network resilience
+    max_reconnect_delay: float = 30.0  # Max delay between reconnection attempts (seconds)
 
     # Paths
     buffer_dir: Path = field(default_factory=_get_default_buffer_dir)
@@ -96,12 +101,20 @@ class PilotConfig:
             config.cooldown_seconds = float(val)
         if val := os.getenv("PILOT_SEGMENT_DURATION"):
             config.segment_duration = float(val)
+        if val := os.getenv("PILOT_STARTUP_DELAY_SECONDS"):
+            config.startup_delay_seconds = float(val)
+        if val := os.getenv("PILOT_MIN_MOTION_SECONDS"):
+            config.min_motion_seconds = float(val)
 
         # Detection thresholds
         if val := os.getenv("PILOT_MOTION_THRESHOLD"):
             config.motion_threshold = float(val)
         if val := os.getenv("PILOT_LIGHT_JUMP_THRESHOLD"):
             config.light_jump_threshold = float(val)
+
+        # Network resilience
+        if val := os.getenv("PILOT_MAX_RECONNECT_DELAY"):
+            config.max_reconnect_delay = float(val)
 
         # Paths
         if val := os.getenv("PILOT_BUFFER_DIR"):

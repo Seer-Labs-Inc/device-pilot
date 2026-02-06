@@ -171,6 +171,62 @@ class PilotSystem:
         self._running = True
         return True
 
+    def _reconnect_capture(self) -> bool:
+        """
+        Attempt to reconnect the detection stream with exponential backoff.
+
+        Handles outages up to 5+ minutes by retrying indefinitely with
+        exponential backoff (1s → 2s → 4s → ... capped at max_reconnect_delay).
+
+        Returns True if reconnection succeeded, False if we should stop.
+        """
+        delay = 1.0
+        max_delay = self.config.max_reconnect_delay
+        disconnect_start = time.time()
+        buffer_restarted = False
+
+        while self._running:
+            logger.warning(f"Attempting to reconnect in {delay:.0f}s...")
+            time.sleep(delay)
+
+            if not self._running:
+                return False
+
+            self.capture.release()
+            if self.capture.open():
+                disconnect_duration = time.time() - disconnect_start
+                logger.info(f"Reconnected to detection stream after {disconnect_duration:.0f}s")
+                # Reset detector state after reconnection to avoid false triggers
+                self.detector.reset()
+                return True
+
+            # Log how long we've been disconnected
+            disconnect_duration = time.time() - disconnect_start
+            logger.error(f"Reconnection failed after {disconnect_duration:.0f}s, next attempt in {delay:.0f}s")
+
+            # After 2 minutes of failures, restart the HLS buffer too (it's likely also affected)
+            if disconnect_duration > 120 and not buffer_restarted:
+                logger.warning("Extended outage detected, restarting HLS buffer...")
+                self._restart_buffer()
+                buffer_restarted = True
+
+            # Exponential backoff with cap
+            delay = min(delay * 2, max_delay)
+
+        return False
+
+    def _restart_buffer(self) -> bool:
+        """Restart the HLS buffer (for recovery from network issues)."""
+        logger.info("Restarting HLS buffer...")
+        if self.buffer:
+            self.buffer.stop()
+            time.sleep(2)
+            if self.buffer.start():
+                logger.info("HLS buffer restarted successfully")
+                return True
+            logger.error("Failed to restart HLS buffer")
+        return False
+
     def run(self):
         """Run the main detection loop."""
         if not self._running:
@@ -178,39 +234,86 @@ class PilotSystem:
                 return
 
         last_tick = time.time()
+        start_time = time.time()
         motion_state = False
+        motion_start_time: Optional[float] = None  # Track when motion started
+        session_triggered = False  # Track if we've triggered session for current motion
+        detection_enabled = False
+        consecutive_failures = 0
+        max_consecutive_failures = 10  # Restart buffer after this many failures
 
         try:
             while self._running:
                 try:
+                    current_time = time.time()
+
+                    # Startup delay - wait before enabling detection
+                    if not detection_enabled:
+                        elapsed = current_time - start_time
+                        if elapsed < self.config.startup_delay_seconds:
+                            # Still in startup delay, just read frames to warm up
+                            ret, _ = self.capture.read()
+                            if not ret:
+                                time.sleep(0.1)
+                            continue
+                        else:
+                            detection_enabled = True
+                            logger.info("Detection enabled after startup delay")
+
                     # Read frame from detection stream
                     ret, frame = self.capture.read()
                     if not ret:
-                        logger.warning("Failed to read frame, reconnecting...")
-                        time.sleep(1)
-                        self.capture.release()
-                        if not self.capture.open():
-                            logger.error("Failed to reconnect")
+                        consecutive_failures += 1
+                        logger.warning(f"Failed to read frame ({consecutive_failures}/{max_consecutive_failures})")
+
+                        # After too many failures, try restarting the buffer too
+                        if consecutive_failures >= max_consecutive_failures:
+                            logger.error("Too many consecutive failures, restarting buffer...")
+                            self._restart_buffer()
+                            consecutive_failures = 0
+
+                        if not self._reconnect_capture():
                             break
                         continue
 
+                    # Reset failure counter on successful read
+                    consecutive_failures = 0
+
                     # Analyze frame
                     result = self.detector.analyze_frame(frame)
-                    current_time = time.time()
 
-                    # Handle detection state changes
+                    # Handle detection state changes with minimum motion duration
                     if result.motion_detected or result.light_event_detected:
-                        if not motion_state:
-                            logger.info(
-                                f"Motion detected (raw={result.motion_score:.3f}, "
+                        if motion_start_time is None:
+                            # Motion just started
+                            motion_start_time = current_time
+                            logger.debug(
+                                f"Motion started (raw={result.motion_score:.3f}, "
                                 f"smoothed={result.smoothed_motion_score:.3f}, "
                                 f"light_delta={result.brightness_delta:.1f})"
                             )
-                        motion_state = True
-                        self.session_manager.on_motion_detected(current_time)
+
+                        # Check if motion has been sustained long enough
+                        motion_duration = current_time - motion_start_time
+                        if motion_duration >= self.config.min_motion_seconds:
+                            if not motion_state:
+                                logger.info(
+                                    f"Motion confirmed after {motion_duration:.1f}s "
+                                    f"(raw={result.motion_score:.3f}, "
+                                    f"smoothed={result.smoothed_motion_score:.3f}, "
+                                    f"light_delta={result.brightness_delta:.1f})"
+                                )
+                                motion_state = True
+                            self.session_manager.on_motion_detected(current_time)
                     else:
-                        if motion_state:
-                            logger.info("Motion ended")
+                        # No motion detected
+                        if motion_start_time is not None:
+                            motion_duration = current_time - motion_start_time
+                            if motion_state:
+                                logger.info(f"Motion ended (duration: {motion_duration:.1f}s)")
+                            elif motion_duration > 0.1:
+                                logger.debug(f"Brief motion ignored ({motion_duration:.2f}s < {self.config.min_motion_seconds}s)")
+                        motion_start_time = None
                         motion_state = False
                         self.session_manager.on_no_motion(current_time)
 
