@@ -111,6 +111,9 @@ class SessionRecorder:
 class RecorderManager:
     """Manages multiple session recorders."""
 
+    # Polling interval for fallback clip detection
+    POLL_INTERVAL = 1.0
+
     def __init__(
         self,
         buffer_dir: Path,
@@ -135,6 +138,9 @@ class RecorderManager:
         self.recorders: Dict[str, SessionRecorder] = {}
         self._clip_callback: Optional[Callable[[Path], None]] = None
         self._buffer_watcher: Optional[WatcherHandle] = None
+        self._seen_clips: set = set()  # Track clips we've already processed
+        self._poll_thread: Optional[threading.Thread] = None
+        self._polling = False
 
     def start_session(
         self,
@@ -174,31 +180,90 @@ class RecorderManager:
         for recorder in self.recorders.values():
             recorder.add_clip(clip_path)
 
+    def _on_new_clip(self, path: Path):
+        """Handle a new clip being detected (from watcher or polling)."""
+        # Track that we've seen this clip
+        clip_name = path.name
+        if clip_name in self._seen_clips:
+            return  # Already processed
+        self._seen_clips.add(clip_name)
+
+        # Add to all active sessions
+        self.add_clip_to_sessions(path)
+
+        # Call optional callback
+        if self._clip_callback:
+            self._clip_callback(path)
+
+    def _poll_for_clips(self):
+        """
+        Polling fallback to detect new clips.
+
+        This runs in a separate thread and periodically scans the buffer
+        directory for new clips. This ensures clips are captured even if
+        the inotifywait watcher fails.
+        """
+        logger.debug(f"Starting clip polling on {self.buffer_dir}")
+        while self._polling:
+            try:
+                # Scan for .ts files
+                for clip_path in self.buffer_dir.glob("clip_*.ts"):
+                    if clip_path.name not in self._seen_clips:
+                        # Verify file is complete (not being written)
+                        try:
+                            size1 = clip_path.stat().st_size
+                            time.sleep(0.1)
+                            size2 = clip_path.stat().st_size
+                            if size1 == size2 and size1 > 0:
+                                # File is stable, process it
+                                self._on_new_clip(clip_path)
+                        except OSError:
+                            pass  # File may have been deleted
+            except Exception as e:
+                logger.error(f"Error in clip polling: {e}")
+
+            time.sleep(self.POLL_INTERVAL)
+
     def start_buffer_watcher(self, callback: Optional[Callable[[Path], None]] = None):
         """
         Start watching the buffer directory for new clips.
+
+        Uses both inotifywait (for immediate detection) and polling
+        (as fallback for reliability).
 
         Args:
             callback: Optional callback for new clips (in addition to adding to sessions)
         """
         self._clip_callback = callback
+        self._seen_clips.clear()
 
-        def on_new_clip(path: Path):
-            self.add_clip_to_sessions(path)
-            if self._clip_callback:
-                self._clip_callback(path)
-
+        # Start the file watcher (inotifywait on Linux, fswatch on Mac)
         self._buffer_watcher = self.platform.start_file_watcher(
             self.buffer_dir,
-            on_new_clip,
+            self._on_new_clip,
             pattern="*.ts",
         )
+        logger.debug(f"Started file watcher on {self.buffer_dir}")
+
+        # Start polling fallback
+        self._polling = True
+        self._poll_thread = threading.Thread(target=self._poll_for_clips, daemon=True)
+        self._poll_thread.start()
 
     def stop_buffer_watcher(self):
         """Stop watching the buffer directory."""
+        # Stop polling first
+        self._polling = False
+        if self._poll_thread:
+            self._poll_thread.join(timeout=2)
+            self._poll_thread = None
+
+        # Stop file watcher
         if self._buffer_watcher:
             self._buffer_watcher.stop()
             self._buffer_watcher = None
+
+        logger.debug("Stopped buffer watcher")
 
     def finalize_session(self, session_id: str) -> Optional[Path]:
         """
